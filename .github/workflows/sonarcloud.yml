@@ -21,8 +21,7 @@ jobs:
         uses: SonarSource/sonarcloud-github-action@master
         with:
           args: >
-            -Dsonar.projectKey=ZiHenggg_SSD_Project
+            -Dsonar.projectKey=ZiHenggg_ICT2216-Group1-CCAPortal
             -Dsonar.organization=zihenggg
-            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
