@@ -251,126 +251,104 @@ def register_student_routes(app, get_db_connection, login_required):
             flash('Error fetching polls.', 'error')
             return redirect(url_for('student_routes.dashboard'))
 
+    def is_user_moderator(user_id):
+        return db.session.query(CCAMembers).filter_by(UserId=user_id, CCARole='moderator').count() > 0
+
+    def get_poll_info(poll_id):
+        return db.session.query(
+            Poll.PollId, Poll.Question, Poll.QuestionType, Poll.StartDate, Poll.EndDate,
+            Poll.IsAnonymous, CCA.Name.label('CCAName'), Poll.IsActive.label('LiveIsActive')
+        ).join(CCA, Poll.CCAId == CCA.CCAId).filter(Poll.PollId == poll_id).first()
+
+    def user_in_cca(user_id, poll_id):
+        return db.session.query(CCAMembers).join(Poll, CCAMembers.CCAId == Poll.CCAId).filter(CCAMembers.UserId == user_id, Poll.PollId == poll_id).count() > 0
+
+    def get_poll_options_with_votes(poll_id):
+        options_data = db.session.query(
+            PollOption.OptionId, PollOption.OptionText, func.count(PollVote.VoteId).label('VoteCount')
+        ).outerjoin(PollVote, PollOption.OptionId == PollVote.OptionId).filter(
+            PollOption.PollId == poll_id
+        ).group_by(PollOption.OptionId, PollOption.OptionText).order_by(PollOption.OptionId).all()
+        return [{'OptionId': o[0], 'OptionText': o[1], 'VoteCount': o[2]} for o in options_data]
+
+    def check_user_voted(user_id, poll_id, is_anon):
+        if is_anon:
+            token = db.session.query(VoteToken.IsUsed).filter_by(PollId=poll_id, UserId=user_id).first()
+            return token and token[0]
+        return db.session.query(PollVote).filter_by(PollId=poll_id, UserId=user_id).count() > 0
+
+    def get_user_votes(user_id, poll_id):
+        data = db.session.query(PollVote.OptionId).filter_by(PollId=poll_id, UserId=user_id).all()
+        return [d[0] for d in data]
+
+    def issue_vote_token(poll_id, user_id):
+        db.session.query(VoteToken).filter_by(PollId=poll_id, UserId=user_id).delete()
+        db.session.commit()
+        raw = secrets.token_hex(32)
+        hashed = hashlib.sha256(raw.encode()).hexdigest()
+        token = VoteToken(Token=hashed, PollId=poll_id, UserId=user_id, IssuedTime=datetime.now(timezone.utc), ExpiryTime=datetime.now(timezone.utc) + timedelta(minutes=10))
+        db.session.add(token)
+        db.session.commit()
+        return raw
+
     @student_bp.route('/poll/<int:poll_id>')
     @login_required_with_mfa
     def view_poll_detail(poll_id):
         try:
-            # Check if user is moderator
-            user_is_moderator = db.session.query(CCAMembers).filter_by(UserId=session['user_id'], CCARole='moderator').count() > 0
+            user_id = session['user_id']
+            user_is_moderator = is_user_moderator(user_id)
 
-            # Get poll details
-            poll_data_row = db.session.query(
-                Poll.PollId, Poll.Question, Poll.QuestionType, Poll.StartDate, Poll.EndDate,
-                Poll.IsAnonymous, CCA.Name.label('CCAName'), Poll.IsActive.label('LiveIsActive')
-            ).join(CCA, Poll.CCAId == CCA.CCAId).filter(Poll.PollId == poll_id).first()
-
-            if not poll_data_row:
+            poll_data = get_poll_info(poll_id)
+            if not poll_data:
                 flash('Access denied.', 'error')
                 return redirect(url_for('student_routes.view_polls'))
 
-            # Check if user is a member of the CCA for this poll
-            is_member_of_cca = db.session.query(CCAMembers).join(Poll, CCAMembers.CCAId == Poll.CCAId).filter(CCAMembers.UserId == session['user_id'], Poll.PollId == poll_id).count() > 0
-
-            if not is_member_of_cca and session['role'] != 'admin':
+            if not user_in_cca(user_id, poll_id) and session['role'] != 'admin':
                 flash('Access denied.', 'error')
                 return redirect(url_for('student_routes.view_polls'))
 
-            start_date_obj = poll_data_row[3]
-            end_date_obj = poll_data_row[4]
-            
-            # Calculate if poll has ended, handling timezone-aware vs timezone-naive comparison
-            is_ended_status = False
-            if isinstance(end_date_obj, datetime):
-                # Make sure both datetimes are timezone-aware for comparison
-                if end_date_obj.tzinfo is None:
-                    # If database datetime is naive, assume it's UTC
-                    end_date_obj = end_date_obj.replace(tzinfo=timezone.utc)
-                is_ended_status = datetime.now(timezone.utc) > end_date_obj
-            
+            end = poll_data[4]
+            if end and end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
+            is_ended = datetime.now(timezone.utc) > end if end else False
+
             poll = {
-                'PollId': poll_data_row[0], 
-                'Question': poll_data_row[1], 
-                'QuestionType': poll_data_row[2],
-                'StartDate': convert_utc_to_gmt8_display(poll_data_row[3]),
-                'EndDate': convert_utc_to_gmt8_display(poll_data_row[4]),
-                'IsAnonymous': poll_data_row[5],
-                'Description': None, 
-                'CCAName': poll_data_row[6], 
-                'LiveIsActive': poll_data_row[7],
-                'is_ended': is_ended_status
+                'PollId': poll_data[0],
+                'Question': poll_data[1],
+                'QuestionType': poll_data[2],
+                'StartDate': convert_utc_to_gmt8_display(poll_data[3]),
+                'EndDate': convert_utc_to_gmt8_display(poll_data[4]),
+                'IsAnonymous': poll_data[5],
+                'Description': None,
+                'CCAName': poll_data[6],
+                'LiveIsActive': poll_data[7],
+                'is_ended': is_ended
             }
-            options_data = db.session.query(
-                PollOption.OptionId, PollOption.OptionText, func.count(PollVote.VoteId).label('VoteCount')
-            ).outerjoin(PollVote, PollOption.OptionId == PollVote.OptionId).filter(PollOption.PollId == poll_id).group_by(PollOption.OptionId, PollOption.OptionText).order_by(PollOption.OptionId).all()
-            
-            # Gets poll options and vote counts.
-            options = [{'OptionId': opt[0], 'OptionText': opt[1], 'VoteCount': opt[2]} for opt in options_data]
 
-            # Check if user has voted
-            has_voted = False
-            if poll['IsAnonymous']:
-                # For anonymous polls, check if the user's token has been used
-                token_status = db.session.query(VoteToken.IsUsed).filter_by(PollId=poll_id, UserId=session['user_id']).first()
-                # Checks if the user's vote token has been used.
-                if token_status and token_status[0]:
-                    has_voted = True
-            else:
-                # For non-anonymous polls, check the Votes table directly
-                if db.session.query(PollVote).filter(and_(PollVote.PollId == poll_id, PollVote.UserId == session['user_id'])).count() > 0:
-                    has_voted = True
-            
-            user_votes = []
-            if has_voted and poll['QuestionType'] == 'multiple':
-                user_votes_data = db.session.query(PollVote.OptionId).filter_by(PollId=poll_id, UserId=session['user_id']).all()
-                # Get the user's votes for a multiple choice poll.
-                user_votes = [uv[0] for uv in user_votes_data]
+            options = get_poll_options_with_votes(poll_id)
+            has_voted = check_user_voted(user_id, poll_id, poll['IsAnonymous'])
+            user_votes = get_user_votes(user_id, poll_id) if has_voted and poll['QuestionType'] == 'multiple' else []
 
             vote_token = None
-            if poll['IsAnonymous'] and poll['LiveIsActive']:
-                # Check if token already exists and if it is unused
-                token_status_row = db.session.query(VoteToken.IsUsed).filter_by(PollId=poll_id, UserId=session['user_id']).first()
+            if poll['IsAnonymous'] and poll['LiveIsActive'] and not has_voted:
+                token_exists = db.session.query(VoteToken.IsUsed).filter_by(PollId=poll_id, UserId=user_id).first()
+                if not token_exists or not token_exists[0]:
+                    vote_token = issue_vote_token(poll_id, user_id)
 
-                if token_status_row:
-                    is_used = token_status_row[0]
-                    if not is_used:
-                        # Token exists but unused → safely delete and reissue
-                        db.session.query(VoteToken).filter_by(PollId=poll_id, UserId=session['user_id']).delete()
-                        db.session.commit()
-
-                        # Reissue a new token
-                        raw_token = secrets.token_hex(32)
-                        hashed_token = hashlib.sha256(raw_token.encode()).hexdigest()
-                        new_token = VoteToken(Token=hashed_token, PollId=poll_id, UserId=session['user_id'], IssuedTime=datetime.now(timezone.utc), ExpiryTime=datetime.now(timezone.utc) + timedelta(minutes=10))
-                        db.session.add(new_token)
-                        db.session.commit()
-
-                        # Inserts a new vote token for the user.
-                        vote_token = raw_token
-                    else:
-                        vote_token = None  # Already used, no reissue
-                else:
-                    # No token exists yet → issue first time
-                    raw_token = secrets.token_hex(32)
-                    hashed_token = hashlib.sha256(raw_token.encode()).hexdigest()
-                    new_token = VoteToken(Token=hashed_token, PollId=poll_id, UserId=session['user_id'], IssuedTime=datetime.now(timezone.utc), ExpiryTime=datetime.now(timezone.utc) + timedelta(minutes=10))
-                    db.session.add(new_token)
-                    db.session.commit()
-
-                    # Inserts a new vote token for the user.
-                    vote_token = raw_token
-
-            return render_template('poll_detail.html', 
-                                poll=poll, 
-                                options=options, 
-                                has_voted=has_voted, 
-                                user_votes=user_votes, 
+            return render_template('poll_detail.html',
+                                poll=poll,
+                                options=options,
+                                has_voted=has_voted,
+                                user_votes=user_votes,
                                 user_name=session.get('name'),
-                                user_is_moderator=user_is_moderator, vote_token=vote_token)
-        
+                                user_is_moderator=user_is_moderator,
+                                vote_token=vote_token)
+
         except Exception as e:
             print(f"Error fetching poll details for poll {poll_id}: {e}")
             flash('Error fetching poll details.', 'error')
             return redirect(url_for('student_routes.view_polls'))
+
 
     @student_bp.route('/poll/<int:poll_id>/vote', methods=['POST'])
     @login_required_with_mfa
