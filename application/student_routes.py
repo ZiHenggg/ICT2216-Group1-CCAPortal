@@ -48,13 +48,14 @@ def register_student_routes(app, get_db_connection, login_required):
 
             secret = session["mfa_temp_secret"]
             totp   = pyotp.TOTP(secret)
+            uri    = totp.provisioning_uri(
+                        name=session["email"],
+                        issuer_name="CCAP Web Portal"
+                    )
+
             # Build QR code (base64 once per request)
             qr_buf = BytesIO()
-            qrcode.make(totp.provisioning_uri(
-                name=session["email"],
-                issuer_name="CCAP Web Portal"
-            )).save(qr_buf, format="PNG")
-
+            qrcode.make(uri).save(qr_buf, format="PNG")
             qr_b64 = b64encode(qr_buf.getvalue()).decode()
 
             # ---------- POST: user submits first code ----------
@@ -276,8 +277,6 @@ def register_student_routes(app, get_db_connection, login_required):
 
             start_date_obj = poll_data_row[3]
             end_date_obj = poll_data_row[4]
-            start_date_str = start_date_obj.strftime('%Y-%m-%d %H:%M') if isinstance(start_date_obj, datetime) else str(start_date_obj) if start_date_obj else 'N/A'
-            end_date_str = end_date_obj.strftime('%Y-%m-%d %H:%M') if isinstance(end_date_obj, datetime) else str(end_date_obj) if end_date_obj else 'N/A'
             
             # Calculate if poll has ended, handling timezone-aware vs timezone-naive comparison
             is_ended_status = False
