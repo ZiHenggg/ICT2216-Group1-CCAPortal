@@ -1,9 +1,13 @@
-# application/auth_utils.py
 from functools import wraps
 from flask import session, redirect, url_for, flash, request
 from application.models import db, User, CCAMembers
 from application.models import LoginLog, db
 from application.models import AdminLog, db
+
+# ─── Constants to Avoid Repetition ──────────────────────────
+STUDENT_DASHBOARD = "student_routes.dashboard"
+MISC_LOGIN = "misc_routes.login"
+ACCESS_DENIED = "Access denied."
 
 # ───────────────────────────────────────────────────────────
 def _mfa_guard():
@@ -17,7 +21,7 @@ def login_required_with_mfa(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not session.get("user_id"):
-            return redirect(url_for("misc_routes.login"))
+            return redirect(url_for(MISC_LOGIN))
         mfa_redirect = _mfa_guard()
         if mfa_redirect:
             return mfa_redirect
@@ -29,11 +33,11 @@ def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not session.get("user_id"):
-            return redirect(url_for("misc_routes.login"))
+            return redirect(url_for(MISC_LOGIN))
         
         if session.get("role") != "admin":
-            flash("Access denied.", "error")
-            return redirect(url_for("student_routes.dashboard"))
+            flash(ACCESS_DENIED, "error")
+            return redirect(url_for(STUDENT_DASHBOARD))
 
         # MFA Check
         mfa_redirect = _mfa_guard()
@@ -48,14 +52,14 @@ def admin_required(f):
             ).first() is not None
 
             if not is_admin:
-                flash("Access denied.", "error")
+                flash(ACCESS_DENIED, "error")
                 print(f'DEBUG: admin access denied')
-                return redirect(url_for("student_routes.dashboard"))
+                return redirect(url_for(STUDENT_DASHBOARD))
 
         except Exception as e:
             print(f"[admin_required DB check error] {e}")
             flash("Error verifying privileges.", "error")
-            return redirect(url_for("student_routes.dashboard"))
+            return redirect(url_for(STUDENT_DASHBOARD))
 
         return f(*args, **kwargs)
     return decorated
@@ -65,11 +69,11 @@ def moderator_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not session.get("user_id"):
-            return redirect(url_for("misc_routes.login"))
+            return redirect(url_for(MISC_LOGIN))
         
         if session.get("role") not in ("moderator"):
-            flash("Access denied.", "error")
-            return redirect(url_for("student_routes.dashboard"))
+            flash(ACCESS_DENIED, "error")
+            return redirect(url_for(STUDENT_DASHBOARD))
         
         # MFA Check
         mfa_redirect = _mfa_guard()
@@ -84,14 +88,14 @@ def moderator_required(f):
             ).first() is not None
 
             if not is_moderator:
-                flash("Access denied.", "error")
+                flash(ACCESS_DENIED, "error")
                 print(f'DEBUG: moderator access denied.')
-                return redirect(url_for("student_routes.dashboard"))
+                return redirect(url_for(STUDENT_DASHBOARD))
 
         except Exception as e:
             print(f"[moderator_required DB check error] {e}")
             flash("Error verifying moderator role.", "error")
-            return redirect(url_for("student_routes.dashboard"))
+            return redirect(url_for(STUDENT_DASHBOARD))
         
         return f(*args, **kwargs)
     return decorated
