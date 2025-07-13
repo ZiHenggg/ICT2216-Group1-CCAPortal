@@ -48,14 +48,13 @@ def register_student_routes(app, get_db_connection, login_required):
 
             secret = session["mfa_temp_secret"]
             totp   = pyotp.TOTP(secret)
-            uri    = totp.provisioning_uri(
-                        name=session["email"],
-                        issuer_name="CCAP Web Portal"
-                    )
-
             # Build QR code (base64 once per request)
             qr_buf = BytesIO()
-            qrcode.make(uri).save(qr_buf, format="PNG")
+            qrcode.make(totp.provisioning_uri(
+                name=session["email"],
+                issuer_name="CCAP Web Portal"
+            )).save(qr_buf, format="PNG")
+
             qr_b64 = b64encode(qr_buf.getvalue()).decode()
 
             # ---------- POST: user submits first code ----------
